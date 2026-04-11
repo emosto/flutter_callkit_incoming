@@ -43,6 +43,11 @@ class CallkitIncomingActivity : Activity() {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
+        fun getAcceptIntent(context: Context, data: Bundle) =
+            getIntent(context, data).apply {
+                putExtra(CallkitConstants.EXTRA_CALLKIT_AUTO_ACCEPT, true)
+            }
+
         fun getIntentEnded(context: Context, isAccepted: Boolean): Intent {
             val intent = Intent("${context.packageName}.${ACTION_ENDED_CALL_INCOMING}")
             intent.putExtra("ACCEPTED", isAccepted)
@@ -80,6 +85,13 @@ class CallkitIncomingActivity : Activity() {
     private lateinit var ivDeclineCall: ImageView
     private lateinit var tvDecline: TextView
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        incomingData(intent)
+        maybeHandleAutoAccept(intent)
+    }
+
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -113,6 +125,19 @@ class CallkitIncomingActivity : Activity() {
                 endedCallkitIncomingBroadcastReceiver,
                 IntentFilter("${packageName}.${ACTION_ENDED_CALL_INCOMING}")
             )
+        }
+
+        maybeHandleAutoAccept(intent)
+    }
+
+    private fun maybeHandleAutoAccept(intent: Intent) {
+        if (intent.getBooleanExtra(CallkitConstants.EXTRA_CALLKIT_AUTO_ACCEPT, false)) {
+            Log.d("CallkitIncomingActivity", "Auto-accept requested from notification action")
+            Handler(Looper.getMainLooper()).post {
+                if (!isFinishing) {
+                    onAcceptClick()
+                }
+            }
         }
     }
 

@@ -83,7 +83,6 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
 
     private val callkitNotificationManager: CallkitNotificationManager? = FlutterCallkitIncomingPlugin.getInstance()?.getCallkitNotificationManager()
 
-
     @SuppressLint("MissingPermission")
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return

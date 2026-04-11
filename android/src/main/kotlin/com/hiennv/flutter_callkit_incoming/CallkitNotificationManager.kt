@@ -3,6 +3,7 @@ package com.hiennv.flutter_callkit_incoming
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -935,10 +936,19 @@ class CallkitNotificationManager(
     }
 
     private fun getAcceptPendingIntent(id: Int, data: Bundle): PendingIntent {
-        val intentTransparent = TransparentActivity.getIntent(
-            context, CallkitConstants.ACTION_CALL_ACCEPT, data
-        )
-        return PendingIntent.getActivity(context, id, intentTransparent, getFlagPendingIntent())
+        val keyguardManager =
+            context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val isLocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            keyguardManager?.isDeviceLocked == true
+        } else {
+            keyguardManager?.isKeyguardLocked == true
+        }
+        val intent = if (isLocked) {
+            CallkitIncomingActivity.getAcceptIntent(context, data)
+        } else {
+            TransparentActivity.getIntent(context, CallkitConstants.ACTION_CALL_ACCEPT, data)
+        }
+        return PendingIntent.getActivity(context, id, intent, getFlagPendingIntent())
     }
 
     private fun getDeclinePendingIntent(id: Int, data: Bundle): PendingIntent {
@@ -1140,5 +1150,4 @@ class CallkitNotificationManager(
 }
 
 data class CallkitNotification(val id: Int, val notification: Notification)
-
 
