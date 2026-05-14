@@ -439,12 +439,19 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         if(self.sharedProvider == nil){
             self.sharedProvider = CXProvider(configuration: createConfiguration(data))
             self.sharedProvider?.setDelegate(self, queue: nil)
+        } else if let configuration = self.sharedProvider?.configuration {
+            applyConfigurationValues(configuration, data)
         }
         self.callManager.setSharedProvider(self.sharedProvider!)
     }
     
     func createConfiguration(_ data: Data) -> CXProviderConfiguration {
         let configuration = CXProviderConfiguration(localizedName: data.appName)
+        applyConfigurationValues(configuration, data)
+        return configuration
+    }
+
+    func applyConfigurationValues(_ configuration: CXProviderConfiguration, _ data: Data) {
         configuration.supportsVideo = data.supportsVideo
         configuration.maximumCallGroups = data.maximumCallGroups
         configuration.maximumCallsPerCallGroup = data.maximumCallsPerCallGroup
@@ -464,10 +471,11 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 print("Unable to load icon \(data.iconName).");
             }
         }
-        if !data.ringtonePath.isEmpty || data.ringtonePath != "system_ringtone_default"  {
+        if !data.ringtonePath.isEmpty && data.ringtonePath != "system_ringtone_default"  {
             configuration.ringtoneSound = data.ringtonePath
+        } else {
+            configuration.ringtoneSound = nil
         }
-        return configuration
     }
     
     func sendDefaultAudioInterruptionNofificationToStartAudioResource(){
