@@ -615,15 +615,22 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         }
         call.endCall()
         self.callManager.removeCall(call)
-        if (self.answerCall == nil && self.outgoingCall == nil) {
-            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, self.data?.toJSON())
+        let isAnswerCall = self.answerCall?.uuid == call.uuid
+        let isOutgoingCall = self.outgoingCall?.uuid == call.uuid
+        if (!isAnswerCall && !isOutgoingCall && !call.hasConnected) {
+            sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, call.data.toJSON())
             if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
                 appDelegate.onDecline(call, action)
             } else {
                 action.fulfill()
             }
         }else {
-            self.answerCall = nil
+            if isAnswerCall {
+                self.answerCall = nil
+            }
+            if isOutgoingCall {
+                self.outgoingCall = nil
+            }
             sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, call.data.toJSON())
             if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
                 appDelegate.onEnd(call, action)
