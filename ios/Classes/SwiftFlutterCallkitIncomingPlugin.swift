@@ -39,6 +39,12 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     private var silenceEvents: Bool = false
     private let devicePushTokenVoIP = "DevicePushTokenVoIP"
 
+    private func callwaitLog(_ message: String) {
+        let trace = "CALLWAIT: \(message)"
+        print(trace)
+        NSLog("%@", trace)
+    }
+
     
     private func sendEvent(_ event: String, _ body: [String : Any?]?) {
         if silenceEvents {
@@ -416,7 +422,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
         sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TIMEOUT, data.toJSON())
-        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+        if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.onTimeOut(call)
         }
     }
@@ -486,8 +492,9 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: self, userInfo: userInfo)
     }
     
-    func configureAudioSession(){
-        if data?.configureAudioSession != false {
+    func configureAudioSession(_ callData: Data? = nil){
+        let audioData = callData ?? data
+        if audioData?.configureAudioSession != false {
             let session = AVAudioSession.sharedInstance()
             do{
                 try session.setCategory(AVAudioSession.Category.playAndRecord, options: [
@@ -496,14 +503,38 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                     .allowBluetooth,
                 ])
                 
-                try session.setMode(self.getAudioSessionMode(data?.audioSessionMode))
-                try session.setActive(data?.audioSessionActive ?? true)
-                try session.setPreferredSampleRate(data?.audioSessionPreferredSampleRate ?? 44100.0)
-                try session.setPreferredIOBufferDuration(data?.audioSessionPreferredIOBufferDuration ?? 0.005)
+                try session.setMode(self.getAudioSessionMode(audioData?.audioSessionMode))
+                try session.setActive(audioData?.audioSessionActive ?? true)
+                try session.setPreferredSampleRate(audioData?.audioSessionPreferredSampleRate ?? 44100.0)
+                try session.setPreferredIOBufferDuration(audioData?.audioSessionPreferredIOBufferDuration ?? 0.005)
             }catch{
                 print(error)
             }
         }
+    }
+
+    private func notifyAppDelegateAudioActivated(reason: String) {
+        let session = AVAudioSession.sharedInstance()
+        callwaitLog("native audio activated manually reason=\(reason)")
+        if let appDelegate = callkitIncomingAppDelegate() {
+            appDelegate.didActivateAudioSession(session)
+        }
+        sendDefaultAudioInterruptionNofificationToStartAudioResource()
+        self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TOGGLE_AUDIO_SESSION, [ "isActivate": true ])
+    }
+
+    private func callkitIncomingAppDelegate() -> CallkitIncomingAppDelegate? {
+        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+            return appDelegate
+        }
+        if #available(iOS 13.0, *) {
+            for scene in UIApplication.shared.connectedScenes {
+                if let sceneDelegate = scene.delegate as? CallkitIncomingAppDelegate {
+                    return sceneDelegate
+                }
+            }
+        }
+        return nil
     }
     
     func getAudioSessionMode(_ audioSessionMode: String?) -> AVAudioSession.Mode {
@@ -568,22 +599,28 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         guard let call = self.callManager.callWithUUID(uuid: action.callUUID) else{
+            callwaitLog("native answer missing call uuid=\(action.callUUID.uuidString) globalData=\(self.data?.uuid ?? "")")
             action.fail()
             return
         }
-        self.configureAudioSession()
+        callwaitLog("native answer uuid=\(action.callUUID.uuidString) callData=\(call.data.uuid) globalData=\(self.data?.uuid ?? "") extraCount=\(call.data.extra.count)")
+        let shouldNotifyAudioActivated = call.data.configureAudioSession == false
+        self.configureAudioSession(call.data)
+        if shouldNotifyAudioActivated {
+            self.notifyAppDelegateAudioActivated(reason: "answer")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200)) {
-            self.configureAudioSession()
+            self.configureAudioSession(call.data)
         }
 
 
         call.hasConnectDidChange = { [weak self] in
             self?.sharedProvider?.reportOutgoingCall(with: call.uuid, connectedAt: call.connectedData)
         }
-        self.data?.isAccepted = true
+        call.data.isAccepted = true
         self.answerCall = call
-        sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ACCEPT, self.data?.toJSON())
-        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+        sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ACCEPT, call.data.toJSON())
+        if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.onAccept(call, action)
         }else {
             action.fulfill()
@@ -605,6 +642,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard let call = self.callManager.callWithUUID(uuid: action.callUUID) else {
+            callwaitLog("native end missing call uuid=\(action.callUUID.uuidString) answer=\(self.answerCall?.uuid.uuidString ?? "") outgoing=\(self.outgoingCall?.uuid.uuidString ?? "") globalData=\(self.data?.uuid ?? "")")
             if(self.answerCall == nil && self.outgoingCall == nil){
                 sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TIMEOUT, self.data?.toJSON())
             } else {
@@ -613,13 +651,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             action.fail()
             return
         }
+        callwaitLog("native end uuid=\(action.callUUID.uuidString) callData=\(call.data.uuid) connected=\(call.hasConnected) accepted=\(call.data.isAccepted)")
         call.endCall()
         self.callManager.removeCall(call)
         let isAnswerCall = self.answerCall?.uuid == call.uuid
         let isOutgoingCall = self.outgoingCall?.uuid == call.uuid
         if (!isAnswerCall && !isOutgoingCall && !call.hasConnected) {
             sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_DECLINE, call.data.toJSON())
-            if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+            if let appDelegate = callkitIncomingAppDelegate() {
                 appDelegate.onDecline(call, action)
             } else {
                 action.fulfill()
@@ -632,7 +671,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 self.outgoingCall = nil
             }
             sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, call.data.toJSON())
-            if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+            if let appDelegate = callkitIncomingAppDelegate() {
                 appDelegate.onEnd(call, action)
             } else {
                 action.fulfill()
@@ -643,11 +682,12 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
         guard let call = self.callManager.callWithUUID(uuid: action.callUUID) else {
+            callwaitLog("native hold missing call uuid=\(action.callUUID.uuidString) onHold=\(action.isOnHold)")
             action.fail()
             return
         }
+        callwaitLog("native hold uuid=\(action.callUUID.uuidString) callData=\(call.data.uuid) onHold=\(action.isOnHold)")
         call.isOnHold = action.isOnHold
-        call.isMuted = action.isOnHold
         self.callManager.setHold(call: call, onHold: action.isOnHold)
         sendHoldEvent(action.callUUID.uuidString, action.isOnHold)
         action.fulfill()
@@ -688,7 +728,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
         sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TIMEOUT, self.data?.toJSON())
-        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+        if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.onTimeOut(call)
         }
         action.fulfill()
@@ -696,7 +736,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
 
-        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+        if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.didActivateAudioSession(audioSession)
         }
 
@@ -727,7 +767,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         
-        if let appDelegate = UIApplication.shared.delegate as? CallkitIncomingAppDelegate {
+        if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.didDeactivateAudioSession(audioSession)
         }
 

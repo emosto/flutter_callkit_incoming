@@ -69,7 +69,7 @@ class CallManager: NSObject {
         }
         callItem.connectedCall(completion: nil)
         
-        if callItem.isOutGoing {
+        if callItem.isOutGoing || callItem.data.isAccepted {
             return
         }
         
