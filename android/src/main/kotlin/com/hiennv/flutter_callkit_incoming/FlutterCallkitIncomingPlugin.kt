@@ -191,6 +191,22 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                     result.success(true)
                 }
 
+                "reportIncomingCallEndedRemotely" -> {
+                    val args = buildMap<String, Any?> {
+                        val rawArgs = call.arguments
+                        if (rawArgs is Map<*, *>) {
+                            rawArgs.forEach { (key, value) ->
+                                if (key is String) {
+                                    put(key, value)
+                                }
+                            }
+                        }
+                    }
+                    val reportIfMissing = args["reportIfMissing"] as? Boolean ?: true
+                    val reported = reportIncomingCallEndedRemotely(Data(args), reportIfMissing)
+                    result.success(reported)
+                }
+
                 "startCall" -> {
                     val data = Data(call.arguments() ?: HashMap())
                     context?.sendBroadcast(
@@ -346,6 +362,47 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         } catch (error: Exception) {
             result.error("error", error.message, "")
         }
+    }
+
+    private fun reportIncomingCallEndedRemotely(request: Data, reportIfMissing: Boolean): Boolean {
+        val currentContext = context ?: return false
+        val currentCall = getDataActiveCalls(currentContext).firstOrNull { it.id == request.id }
+
+        if (currentCall == null && !reportIfMissing) {
+            return false
+        }
+        if (currentCall?.isAccepted == true) {
+            return false
+        }
+
+        val data = currentCall ?: request
+        data.extra["remote_cancelled"] = true
+        data.extra["remoteCancelled"] = true
+        data.extra["ended_reason"] = "remoteEnded"
+        data.isShowMissedCallNotification = false
+
+        callkitSoundPlayerManager?.stop()
+        callkitNotificationManager?.clearIncomingNotification(data.toBundle(), false)
+        if (currentCall != null) {
+            removeCall(currentContext, currentCall)
+        }
+        sendEvent(
+            CallkitConstants.ACTION_CALL_ENDED,
+            mapOf(
+                "id" to data.id,
+                "nameCaller" to data.nameCaller,
+                "avatar" to data.avatar,
+                "number" to data.handle,
+                "type" to data.type,
+                "duration" to data.duration,
+                "textAccept" to data.textAccept,
+                "textDecline" to data.textDecline,
+                "extra" to data.extra,
+                "remote_cancelled" to true,
+                "ended_reason" to "remoteEnded",
+            )
+        )
+        return true
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {

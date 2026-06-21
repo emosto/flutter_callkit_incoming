@@ -93,6 +93,7 @@ class FlutterCallkitIncoming {
 
   /// Report an incoming call as ended remotely.
   /// On iOS, this dismisses CallKit with CXCallEndedReason.remoteEnded.
+  /// On Android, this clears the incoming call notification without a missed call.
   static Future reportIncomingCallEndedRemotely(
     CallKitParams params, {
     bool reportIfMissing = true,
