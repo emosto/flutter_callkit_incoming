@@ -130,6 +130,17 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             }
             result("OK")
             break
+        case "reportIncomingCallEndedRemotely":
+            guard let args = call.arguments as? [String: Any] else {
+                result("OK")
+                return
+            }
+            self.data = Data(args: args)
+            let reportIfMissing = args["reportIfMissing"] as? Bool ?? true
+            self.reportIncomingCallEndedRemotely(self.data!, reportIfMissing: reportIfMissing) {
+                result("OK")
+            }
+            return
         case "muteCall":
             guard let args = call.arguments as? [String: Any] ,
                   let callId = args["id"] as? String,
@@ -354,6 +365,76 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             call = Call(uuid: UUID(uuidString: data.uuid)!, data: data)
         }
         self.callManager.endCall(call: call!)
+    }
+
+    @objc public func reportIncomingCallEndedRemotely(_ data: Data, reportIfMissing: Bool = true, completion: (() -> Void)? = nil) {
+        guard let uuid = UUID(uuidString: data.uuid) else {
+            print("CallKit remote end ignored invalid UUID \(data.uuid)")
+            completion?()
+            return
+        }
+
+        self.isFromPushKit = false
+        self.data = data
+        initCallkitProvider(data)
+
+        if self.callManager.callWithUUID(uuid: uuid) == nil && reportIfMissing {
+            let callUpdate = incomingCallUpdate(for: data)
+            self.sharedProvider?.reportNewIncomingCall(with: uuid, update: callUpdate) { error in
+                if let error {
+                    print("CallKit remote end failed to report missing incoming call \(uuid.uuidString): \(error.localizedDescription)")
+                } else {
+                    let call = Call(uuid: uuid, data: data)
+                    call.handle = data.handle
+                    self.callManager.addCall(call)
+                }
+
+                self.finishIncomingCallEndedRemotely(uuid: uuid, data: data)
+                completion?()
+            }
+            return
+        }
+
+        finishIncomingCallEndedRemotely(uuid: uuid, data: data)
+        completion?()
+    }
+
+    private func finishIncomingCallEndedRemotely(uuid: UUID, data: Data) {
+        self.sharedProvider?.reportCall(
+            with: uuid,
+            endedAt: Date(),
+            reason: CXCallEndedReason.remoteEnded
+        )
+
+        if let call = self.callManager.callWithUUID(uuid: uuid) {
+            call.endCall()
+            self.callManager.removeCall(call)
+        }
+
+        if self.answerCall?.uuid == uuid {
+            self.answerCall = nil
+        }
+        if self.outgoingCall?.uuid == uuid {
+            self.outgoingCall = nil
+        }
+
+        var eventBody = data.toJSON()
+        eventBody["remote_cancelled"] = true
+        eventBody["ended_reason"] = "remoteEnded"
+        self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ENDED, eventBody)
+    }
+
+    private func incomingCallUpdate(for data: Data) -> CXCallUpdate {
+        let handle = CXHandle(type: self.getHandleType(data.handleType), value: data.getEncryptHandle())
+        let callUpdate = CXCallUpdate()
+        callUpdate.remoteHandle = handle
+        callUpdate.supportsDTMF = data.supportsDTMF
+        callUpdate.supportsHolding = data.supportsHolding
+        callUpdate.supportsGrouping = data.supportsGrouping
+        callUpdate.supportsUngrouping = data.supportsUngrouping
+        callUpdate.hasVideo = data.type > 0
+        callUpdate.localizedCallerName = data.nameCaller
+        return callUpdate
     }
     
     @objc public func connectedCall(_ data: Data) {

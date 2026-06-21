@@ -91,6 +91,17 @@ class FlutterCallkitIncoming {
     await _channel.invokeMethod("endCall", {'id': id});
   }
 
+  /// Report an incoming call as ended remotely.
+  /// On iOS, this dismisses CallKit with CXCallEndedReason.remoteEnded.
+  static Future reportIncomingCallEndedRemotely(
+    CallKitParams params, {
+    bool reportIfMissing = true,
+  }) async {
+    final payload = params.toJson();
+    payload['reportIfMissing'] = reportIfMissing;
+    await _channel.invokeMethod("reportIncomingCallEndedRemotely", payload);
+  }
+
   /// Set call has been connected successfully.
   /// On iOS, using Callkit(update a history into the Phone app).
   /// On Android, Nothing(only callback event listener).
