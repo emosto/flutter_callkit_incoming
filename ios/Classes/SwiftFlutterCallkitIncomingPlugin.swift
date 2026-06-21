@@ -432,6 +432,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         completion?()
     }
 
+    @objc public func hasRemoteEndableIncomingCall(_ uuidString: String) -> Bool {
+        guard let uuid = UUID(uuidString: uuidString),
+              let call = self.callManager.callWithUUID(uuid: uuid) else {
+            return false
+        }
+        return canRemoteEndIncomingCall(call, uuid: uuid)
+    }
+
     private func markIncomingCallRemoteEnded(_ uuid: UUID) {
         remoteEndedIncomingCallUUIDs.insert(uuid)
         DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(60)) { [weak self] in
