@@ -131,7 +131,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             break
         case "reportIncomingCallEndedRemotely":
             guard let args = call.arguments as? [String: Any] else {
-                result("OK")
+                result(false)
                 return
             }
             let data = Data(args: args)
@@ -385,7 +385,8 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
 
-        guard let existingCall = self.callManager.callWithUUID(uuid: uuid) else {
+        guard let existingCall = self.callManager.callWithUUID(uuid: uuid),
+              let provider = self.sharedProvider else {
             completion?(false)
             return
         }
@@ -395,8 +396,21 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             return
         }
 
-        self.isFromPushKit = false
-        finishIncomingCallEndedRemotely(uuid: uuid, data: data)
+        var mergedExtra = existingCall.data.extra as? [String: Any] ?? [:]
+        if let requestedExtra = data.extra as? [String: Any] {
+            mergedExtra.merge(requestedExtra) { _, requested in requested }
+        }
+        existingCall.data.extra = mergedExtra as NSDictionary
+
+        finishIncomingCallEndedRemotely(
+            uuid: uuid,
+            data: existingCall.data,
+            provider: provider
+        )
+        if self.data?.uuid.caseInsensitiveCompare(uuid.uuidString) == .orderedSame {
+            self.isFromPushKit = false
+            self.data = nil
+        }
         completion?(true)
     }
 
@@ -415,8 +429,8 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         return !call.hasStartedConnecting && !call.hasConnected && !call.data.isAccepted && !call.isOutGoing
     }
 
-    private func finishIncomingCallEndedRemotely(uuid: UUID, data: Data) {
-        self.sharedProvider?.reportCall(
+    private func finishIncomingCallEndedRemotely(uuid: UUID, data: Data, provider: CXProvider) {
+        provider.reportCall(
             with: uuid,
             endedAt: Date(),
             reason: CXCallEndedReason.remoteEnded
