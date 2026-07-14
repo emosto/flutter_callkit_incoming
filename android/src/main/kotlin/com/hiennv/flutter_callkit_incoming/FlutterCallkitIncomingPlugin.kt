@@ -202,8 +202,7 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                             }
                         }
                     }
-                    val reportIfMissing = args["reportIfMissing"] as? Boolean ?: true
-                    val reported = reportIncomingCallEndedRemotely(Data(args), reportIfMissing)
+                    val reported = reportIncomingCallEndedRemotely(Data(args))
                     result.success(reported)
                 }
 
@@ -364,20 +363,26 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
-    private fun reportIncomingCallEndedRemotely(request: Data, reportIfMissing: Boolean): Boolean {
+    private fun reportIncomingCallEndedRemotely(request: Data): Boolean {
         val currentContext = context ?: return false
         val currentCall = getDataActiveCalls(currentContext).firstOrNull { it.id == request.id }
 
-        if (currentCall == null && !reportIfMissing) {
+        if (currentCall == null) {
             return false
         }
         if (currentCall?.isAccepted == true) {
             return false
         }
 
-        val data = currentCall ?: request
-        data.extra["remote_cancelled"] = true
-        data.extra["remoteCancelled"] = true
+        val data = currentCall
+        val source = request.extra["remote_end_source"]?.toString() ?: "remote_end"
+        data.extra["remote_ended"] = true
+        data.extra["remoteEnded"] = true
+        data.extra["remote_end_source"] = source
+        if (source == "cancelled_notification") {
+            data.extra["remote_cancelled"] = true
+            data.extra["remoteCancelled"] = true
+        }
         data.extra["ended_reason"] = "remoteEnded"
         data.isShowMissedCallNotification = false
 
@@ -398,7 +403,9 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                 "textAccept" to data.textAccept,
                 "textDecline" to data.textDecline,
                 "extra" to data.extra,
-                "remote_cancelled" to true,
+                "remote_ended" to true,
+                "remote_cancelled" to (source == "cancelled_notification"),
+                "remote_end_source" to source,
                 "ended_reason" to "remoteEnded",
             )
         )
