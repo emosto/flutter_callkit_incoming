@@ -295,7 +295,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         }
     }
     
-    @objc public func showCallkitIncoming(_ data: Data, fromPushKit: Bool, completion: @escaping () -> Void) {
+    @objc public func showCallkitIncoming(_ data: Data, fromPushKit: Bool, completion: @escaping (Bool) -> Void) {
         self.isFromPushKit = fromPushKit
         if(fromPushKit){
             self.data = data
@@ -315,27 +315,39 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         
         initCallkitProvider(data)
         
-        let uuid = UUID(uuidString: data.uuid)
-        
-        self.sharedProvider?.reportNewIncomingCall(with: uuid!, update: callUpdate) { error in
+        guard let uuid = UUID(uuidString: data.uuid) else {
+            print("CallKit incoming report failed: invalid UUID \(data.uuid)")
+            completion(false)
+            return
+        }
+
+        guard let provider = self.sharedProvider else {
+            print("CallKit incoming report failed: missing CXProvider")
+            completion(false)
+            return
+        }
+
+        provider.reportNewIncomingCall(with: uuid, update: callUpdate) { error in
             if(error == nil) {
-                if self.consumeRemoteEndedIncomingCall(uuid!) {
+                if self.consumeRemoteEndedIncomingCall(uuid) {
                     self.sharedProvider?.reportCall(
-                        with: uuid!,
+                        with: uuid,
                         endedAt: Date(),
                         reason: CXCallEndedReason.remoteEnded
                     )
-                    completion()
+                    completion(false)
                     return
                 }
                 self.configureAudioSession()
-                let call = Call(uuid: uuid!, data: data)
+                let call = Call(uuid: uuid, data: data)
                 call.handle = data.handle
                 self.callManager.addCall(call)
                 self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_INCOMING, data.toJSON())
                 self.endCallNotExist(data)
+            } else {
+                print("CallKit incoming report failed: \(String(describing: error))")
             }
-            completion()
+            completion(error == nil)
         }
     }
     
