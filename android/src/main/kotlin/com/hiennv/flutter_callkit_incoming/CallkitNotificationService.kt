@@ -38,8 +38,16 @@ class CallkitNotificationService : Service() {
                 ContextCompat.startForegroundService(context, intent)
             } catch (error: IllegalStateException) {
                 Log.w("CallkitNotification", "Foreground service start not allowed")
+                clearAcceptedNotification(context, action, data)
             } catch (error: SecurityException) {
                 Log.w("CallkitNotification", "Foreground service permission denied")
+                clearAcceptedNotification(context, action, data)
+            }
+        }
+
+        private fun clearAcceptedNotification(context: Context, action: String, data: Bundle) {
+            if (action == CallkitConstants.ACTION_CALL_ACCEPT) {
+                notificationManager(context).clearIncomingNotification(data, true)
             }
         }
 
@@ -55,9 +63,12 @@ class CallkitNotificationService : Service() {
     }
 
     // A receiver can start this service before a Flutter engine/plugin exists.
-    private val callkitNotificationManager: CallkitNotificationManager by lazy {
-        notificationManager(this)
+    private val fallbackNotificationManager by lazy {
+        CallkitNotificationManager(applicationContext, null)
     }
+    private val callkitNotificationManager: CallkitNotificationManager
+        get() = FlutterCallkitIncomingPlugin.getInstance()?.getCallkitNotificationManager()
+            ?: fallbackNotificationManager
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
