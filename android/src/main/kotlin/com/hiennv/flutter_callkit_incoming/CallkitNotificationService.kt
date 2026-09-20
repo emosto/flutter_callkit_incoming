@@ -22,22 +22,30 @@ class CallkitNotificationService : Service() {
 
 
         fun startServiceWithAction(context: Context, action: String, data: Bundle?) {
+            if (action !in ActionForeground || data == null) return
+            if (!data.getBoolean(CallkitConstants.EXTRA_CALLKIT_CALLING_SHOW, true)) {
+                if (action == CallkitConstants.ACTION_CALL_ACCEPT) {
+                    notificationManager(context).clearIncomingNotification(data, true)
+                }
+                stopService(context)
+                return
+            }
             val intent = Intent(context, CallkitNotificationService::class.java).apply {
                 this.action = action
                 putExtra(CallkitConstants.EXTRA_CALLKIT_INCOMING_DATA, data)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && intent.action in ActionForeground) {
-                data?.let {
-                    if(it.getBoolean(CallkitConstants.EXTRA_CALLKIT_CALLING_SHOW, true)) {
-                        ContextCompat.startForegroundService(context, intent)
-                    }else {
-                        context.startService(intent)
-                    }
-                }
-            } else {
-                context.startService(intent)
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (error: IllegalStateException) {
+                Log.w("CallkitNotification", "Foreground service start not allowed")
+            } catch (error: SecurityException) {
+                Log.w("CallkitNotification", "Foreground service permission denied")
             }
         }
+
+        private fun notificationManager(context: Context): CallkitNotificationManager =
+            FlutterCallkitIncomingPlugin.getInstance()?.getCallkitNotificationManager()
+                ?: CallkitNotificationManager(context.applicationContext, null)
 
         fun stopService(context: Context) {
             val intent = Intent(context, CallkitNotificationService::class.java)
@@ -46,46 +54,45 @@ class CallkitNotificationService : Service() {
 
     }
 
-    private val callkitNotificationManager: CallkitNotificationManager? =
-        FlutterCallkitIncomingPlugin.getInstance()?.getCallkitNotificationManager()
-
-
-    override fun onCreate() {
-        super.onCreate()
+    // A receiver can start this service before a Flutter engine/plugin exists.
+    private val callkitNotificationManager: CallkitNotificationManager by lazy {
+        notificationManager(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action === CallkitConstants.ACTION_CALL_START) {
-            intent.getBundleExtra(CallkitConstants.EXTRA_CALLKIT_INCOMING_DATA)
-                ?.let {
-                    if(it.getBoolean(CallkitConstants.EXTRA_CALLKIT_CALLING_SHOW, true)) {
-                        FlutterCallkitIncomingPlugin.getInstance()?.getCallkitNotificationManager()
-                            ?.createNotificationChanel(it)
-                        showOngoingCallNotification(it)
-                    }else {
-                        stopSelf()
-                    }
-                }
+        val action = intent?.action
+        val data = intent?.getBundleExtra(CallkitConstants.EXTRA_CALLKIT_INCOMING_DATA)
+        if (action !in ActionForeground || data == null ||
+            !data.getBoolean(CallkitConstants.EXTRA_CALLKIT_CALLING_SHOW, true)) {
+            if (action == CallkitConstants.ACTION_CALL_ACCEPT && data != null) {
+                callkitNotificationManager.clearIncomingNotification(data, true)
+            }
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
-        if (intent?.action === CallkitConstants.ACTION_CALL_ACCEPT) {
-            intent.getBundleExtra(CallkitConstants.EXTRA_CALLKIT_INCOMING_DATA)
-                ?.let {
-                    callkitNotificationManager?.clearIncomingNotification(it, true)
-                    if (it.getBoolean(CallkitConstants.EXTRA_CALLKIT_CALLING_SHOW, true)) {
-                        showOngoingCallNotification(it)
-                    }else {
-                        stopSelf()
-                    }
-                }
+        try {
+            callkitNotificationManager.createNotificationChanel(data)
+            // Promote before doing secondary notification cleanup.
+            showOngoingCallNotification(data)
+        } catch (error: IllegalStateException) {
+            Log.w("CallkitNotification", "Foreground promotion not allowed")
+            stopSelf(startId)
+        } catch (error: SecurityException) {
+            Log.w("CallkitNotification", "Foreground promotion permission denied")
+            stopSelf(startId)
+        } finally {
+            if (action == CallkitConstants.ACTION_CALL_ACCEPT) {
+                callkitNotificationManager.clearIncomingNotification(data, true)
+            }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     @SuppressLint("MissingPermission")
     private fun showOngoingCallNotification(bundle: Bundle) {
 
         val callkitNotification =
-            this.callkitNotificationManager?.getOnGoingCallNotification(bundle, false)
+            this.callkitNotificationManager.getOnGoingCallNotification(bundle, false)
         if (callkitNotification != null) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -102,7 +109,7 @@ class CallkitNotificationService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        callkitNotificationManager?.destroy()
+        callkitNotificationManager.destroy()
     }
 
     override fun onBind(p0: Intent?): IBinder? {
