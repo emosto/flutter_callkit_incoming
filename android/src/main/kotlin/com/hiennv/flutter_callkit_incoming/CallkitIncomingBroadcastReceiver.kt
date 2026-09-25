@@ -88,10 +88,21 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         val data = intent.extras?.getBundle(CallkitConstants.EXTRA_CALLKIT_INCOMING_DATA) ?: return
+        val waitingCall = CallWaitingController.isWaiting(data.getString(CallkitConstants.EXTRA_CALLKIT_ID, ""))
+        if (!action.endsWith(CallkitConstants.ACTION_CALL_INCOMING)) {
+            CallWaitingController.clear(context, data.getString(CallkitConstants.EXTRA_CALLKIT_ID, ""))
+        }
         when (action) {
             "${context.packageName}.${CallkitConstants.ACTION_CALL_INCOMING}" -> {
                 try {
-                    callkitNotificationManager?.showIncomingNotification(data)
+                    val suppressed = CallWaitingController.incoming(context, data)
+                    val id = data.getString(CallkitConstants.EXTRA_CALLKIT_ID, "")
+                    if (CallWaitingController.isDismissed(id)) {
+                        callkitNotificationManager?.clearIncomingNotification(data, false)
+                        removeCall(context, Data.fromBundle(data))
+                        return
+                    }
+                    if (!suppressed) callkitNotificationManager?.showIncomingNotification(data)
                     sendEventFlutter(CallkitConstants.ACTION_CALL_INCOMING, data)
                     addCall(context, Data.fromBundle(data))
                 } catch (error: Exception) {
@@ -117,11 +128,13 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
             "${context.packageName}.${CallkitConstants.ACTION_CALL_ACCEPT}" -> {
                 try {
                     // start service and show ongoing call when call is accepted
-                    CallkitNotificationService.startServiceWithAction(
-                        context,
-                        CallkitConstants.ACTION_CALL_ACCEPT,
-                        data
-                    )
+                    if (!waitingCall) {
+                        CallkitNotificationService.startServiceWithAction(
+                            context,
+                            CallkitConstants.ACTION_CALL_ACCEPT,
+                            data
+                        )
+                    }
                     sendEventFlutter(CallkitConstants.ACTION_CALL_ACCEPT, data)
                     addCall(context, Data.fromBundle(data), true)
                 } catch (error: Exception) {
@@ -144,7 +157,9 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
                 try {
                     // clear notification and stop service
                     callkitNotificationManager?.clearIncomingNotification(data, false)
-                    CallkitNotificationService.stopService(context)
+                    if (!CallWaitingController.hasOtherCall(data.getString(CallkitConstants.EXTRA_CALLKIT_ID, ""))) {
+                        CallkitNotificationService.stopService(context)
+                    }
                     sendEventFlutter(CallkitConstants.ACTION_CALL_ENDED, data)
                     removeCall(context, Data.fromBundle(data))
                 } catch (error: Exception) {
@@ -237,6 +252,7 @@ class CallkitIncomingBroadcastReceiver : BroadcastReceiver() {
         )
         val forwardData = mapOf(
             "id" to data.getString(CallkitConstants.EXTRA_CALLKIT_ID, ""),
+            "waitingEndCurrent" to data.getBoolean("waitingEndCurrent", false),
             "nameCaller" to data.getString(CallkitConstants.EXTRA_CALLKIT_NAME_CALLER, ""),
             "avatar" to data.getString(CallkitConstants.EXTRA_CALLKIT_AVATAR, ""),
             "number" to data.getString(CallkitConstants.EXTRA_CALLKIT_HANDLE, ""),

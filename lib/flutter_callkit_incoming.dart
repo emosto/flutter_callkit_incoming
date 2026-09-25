@@ -12,6 +12,16 @@ import 'entities/entities.dart';
 /// * callConnected(dynamic)
 
 class FlutterCallkitIncoming {
+  static Future<void> updateCallWaitingState(Map<String, dynamic> state) =>
+      _channel.invokeMethod<void>('updateCallWaitingState', state);
+
+  static Future<void> setCallWaitingHeld(String id, bool held) =>
+      _channel.invokeMethod<void>('setCallWaitingHeld', {'id': id, 'held': held});
+
+  static Future<void> completeCallWaitingAction(String actionId, bool success) =>
+      _channel.invokeMethod<void>('completeCallWaitingAction',
+          {'actionId': actionId, 'success': success});
+
   static const MethodChannel _channel =
       MethodChannel('flutter_callkit_incoming');
   static const EventChannel _eventChannel =

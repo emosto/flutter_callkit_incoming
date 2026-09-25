@@ -163,6 +163,15 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {
         try {
             when (call.method) {
+                "updateCallWaitingState" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    @Suppress("UNCHECKED_CAST")
+                    CallWaitingController.update(requireNotNull(context),
+                        args["calls"] as? List<Map<String, String>> ?: emptyList(),
+                        args["labels"] as? Map<String, String>, args["audioInterrupted"] as? Boolean)
+                    result.success(null)
+                }
+                "setCallWaitingHeld", "completeCallWaitingAction" -> result.success(null)
                 "showCallkitIncoming" -> {
                     val data = Data(call.arguments() ?: HashMap())
                     data.from = "notification"

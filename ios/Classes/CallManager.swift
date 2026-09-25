@@ -20,7 +20,7 @@ class CallManager: NSObject {
         self.sharedProvider = sharedProvider
     }
     
-    func startCall(_ data: Data) {
+    func startCall(_ data: Data, completion: ((Bool) -> Void)? = nil) {
         let handle = CXHandle(type: self.getHandleType(data.handleType), value: data.getEncryptHandle())
         let uuid = UUID(uuidString: data.uuid)
         let startCallAction = CXStartCallAction(call: uuid!, handle: handle)
@@ -28,7 +28,9 @@ class CallManager: NSObject {
         let callTransaction = CXTransaction()
         callTransaction.addAction(startCallAction)
         //requestCall
-        self.requestCall(callTransaction, action: "startCall", completion: { _ in
+        self.requestCall(callTransaction, action: "startCall", completion: { success in
+            completion?(success)
+            guard success else { return }
             let callUpdate = CXCallUpdate()
             callUpdate.remoteHandle = handle
             callUpdate.supportsDTMF = data.supportsDTMF
@@ -132,9 +134,9 @@ class CallManager: NSObject {
                 }else if(action == "endCall" || action == "endCallAlls"){
                     //TODO: push notification for End Call
                 }
-                completion?(error == nil)
                 print("Requested transaction successfully: \(action)")
             }
+            completion?(error == nil)
         }
     }
     
