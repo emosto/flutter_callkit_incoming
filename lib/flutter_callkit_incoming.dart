@@ -12,13 +12,21 @@ import 'entities/entities.dart';
 /// * callConnected(dynamic)
 
 class FlutterCallkitIncoming {
+  /// Android: route the foreground Telecom connection. Returns false when
+  /// Telecom has no call, allowing the app's existing WebRTC route fallback.
+  static Future<bool> setAudioRoute({required bool speaker}) async =>
+      await _channel.invokeMethod<bool>(
+          'setAudioRoute', {'route': speaker ? 'speaker' : 'preferred'}) ??
+      false;
+
   static Future<void> updateCallWaitingState(Map<String, dynamic> state) =>
       _channel.invokeMethod<void>('updateCallWaitingState', state);
 
-  static Future<void> setCallWaitingHeld(String id, bool held) =>
-      _channel.invokeMethod<void>('setCallWaitingHeld', {'id': id, 'held': held});
+  static Future<void> setCallWaitingHeld(String id, bool held) => _channel
+      .invokeMethod<void>('setCallWaitingHeld', {'id': id, 'held': held});
 
-  static Future<void> completeCallWaitingAction(String actionId, bool success) =>
+  static Future<void> completeCallWaitingAction(
+          String actionId, bool success) =>
       _channel.invokeMethod<void>('completeCallWaitingAction',
           {'actionId': actionId, 'success': success});
 

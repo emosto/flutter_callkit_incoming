@@ -364,7 +364,14 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                 }
 
                 "setAudioRoute" -> {
-                    result.success(true)
+                    val route = call.argument<String>("route")
+                    if (route != "speaker" && route != "preferred") {
+                        result.error("invalid_audio_route", "Expected speaker or preferred", null)
+                    } else {
+                        CallkitConnectionService.routeAudio(route == "speaker",
+                            { handled -> result.success(handled) },
+                            { message -> result.error("audio_route_failed", message, null) })
+                    }
                 }
             }
         } catch (error: Exception) {

@@ -2,6 +2,11 @@ package com.hiennv.flutter_callkit_incoming
 
 import android.content.Context
 import android.os.Bundle
+import android.os.Build
+import android.os.OutcomeReceiver
+import android.telecom.CallAudioState
+import android.telecom.CallEndpoint
+import android.telecom.CallEndpointException
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
@@ -13,9 +18,19 @@ import android.util.Log
 /** Telecom mirrors call state; the app remains the only SIP/media owner. */
 class CallkitConnectionService : ConnectionService() {
     companion object {
-        private val connections = mutableMapOf<String, Connection>()
+        private val connections = mutableMapOf<String, VoxbiConnection>()
         private val pending = mutableSetOf<String>()
         private val desired = mutableMapOf<String, String>()
+
+        fun routeAudio(speaker: Boolean, complete: (Boolean) -> Unit, fail: (String) -> Unit) {
+            val id = CallAudioRoutePolicy.connection(desired, connections.keys)
+            if (id == null) {
+                if (connections.isEmpty()) complete(false)
+                else fail("No foreground Telecom connection")
+                return
+            }
+            connections.getValue(id).routeAudio(speaker, complete, fail)
+        }
 
         fun synchronize(context: Context, calls: List<Map<String, String>>) {
             desired.clear()
@@ -53,16 +68,7 @@ class CallkitConnectionService : ConnectionService() {
         val id = request.extras?.getString("voxbiCallId") ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
         pending.remove(id)
         if (!desired.containsKey(id)) return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED))
-        val connection = object : Connection() {
-            override fun onHold() = emit(CallkitConstants.ACTION_CALL_TOGGLE_HOLD, mapOf("isOnHold" to true))
-            override fun onUnhold() = emit(CallkitConstants.ACTION_CALL_TOGGLE_HOLD, mapOf("isOnHold" to false))
-            override fun onDisconnect() = emit(CallkitConstants.ACTION_CALL_ENDED)
-            override fun onAnswer() = emit(CallkitConstants.ACTION_CALL_ACCEPT)
-            override fun onReject() = emit(CallkitConstants.ACTION_CALL_DECLINE)
-            private fun emit(event: String, fields: Map<String, Any> = emptyMap()) {
-                FlutterCallkitIncomingPlugin.sendEvent(event, mapOf("id" to id) + fields)
-            }
-        }
+        val connection = VoxbiConnection(id)
         connection.connectionProperties = Connection.PROPERTY_SELF_MANAGED
         connection.connectionCapabilities = Connection.CAPABILITY_SUPPORT_HOLD or Connection.CAPABILITY_HOLD
         connection.setAudioModeIsVoip(true)
@@ -72,6 +78,53 @@ class CallkitConnectionService : ConnectionService() {
         android.os.Handler(mainLooper).post { desired[id]?.let { applyState(connection, it) } }
         return connection
     }
+
+    private class VoxbiConnection(private val id: String) : Connection() {
+        private var endpoints: List<CallEndpoint> = emptyList()
+        override fun onAvailableCallEndpointsChanged(availableEndpoints: List<CallEndpoint>) {
+            endpoints = availableEndpoints
+        }
+
+        fun routeAudio(speaker: Boolean, complete: (Boolean) -> Unit, fail: (String) -> Unit) {
+            if (Build.VERSION.SDK_INT >= 34 && endpoints.isNotEmpty()) {
+                val byRoute = endpoints.mapNotNull { endpoint ->
+                    val route = when (endpoint.endpointType) {
+                        CallEndpoint.TYPE_SPEAKER -> CallAudioState.ROUTE_SPEAKER
+                        CallEndpoint.TYPE_BLUETOOTH -> CallAudioState.ROUTE_BLUETOOTH
+                        CallEndpoint.TYPE_WIRED_HEADSET -> CallAudioState.ROUTE_WIRED_HEADSET
+                        CallEndpoint.TYPE_EARPIECE -> CallAudioState.ROUTE_EARPIECE
+                        else -> null
+                    }
+                    route?.let { it to endpoint }
+                }.toMap()
+                val endpoint = byRoute[CallAudioRoutePolicy.select(speaker, byRoute.keys)]
+                if (endpoint == null) { fail("Requested call output is unavailable"); return }
+                requestCallEndpointChange(endpoint, { task -> android.os.Handler(android.os.Looper.getMainLooper()).post(task) },
+                    object : OutcomeReceiver<Void, CallEndpointException> {
+                        override fun onResult(result: Void?) { complete(true) }
+                        override fun onError(error: CallEndpointException) { fail("Telecom route request failed: ${error.code}") }
+                    })
+            } else {
+                val supported = callAudioState?.supportedRouteMask ?: 0
+                val available = setOf(CallAudioState.ROUTE_SPEAKER, CallAudioState.ROUTE_EARPIECE,
+                    CallAudioState.ROUTE_BLUETOOTH, CallAudioState.ROUTE_WIRED_HEADSET).filter { supported and it != 0 }.toSet()
+                val route = CallAudioRoutePolicy.select(speaker, available)
+                if (route == null) { fail("Requested call output is unavailable"); return }
+                @Suppress("DEPRECATION")
+                setAudioRoute(route)
+                complete(true)
+            }
+        }
+        override fun onHold() = emit(CallkitConstants.ACTION_CALL_TOGGLE_HOLD, mapOf("isOnHold" to true))
+        override fun onUnhold() = emit(CallkitConstants.ACTION_CALL_TOGGLE_HOLD, mapOf("isOnHold" to false))
+        override fun onDisconnect() = emit(CallkitConstants.ACTION_CALL_ENDED)
+        override fun onAnswer() = emit(CallkitConstants.ACTION_CALL_ACCEPT)
+        override fun onReject() = emit(CallkitConstants.ACTION_CALL_DECLINE)
+        private fun emit(event: String, fields: Map<String, Any> = emptyMap()) {
+            FlutterCallkitIncomingPlugin.sendEvent(event, mapOf("id" to id) + fields)
+        }
+    }
+
 
     override fun onCreateIncomingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) {
         request.extras?.getString("voxbiCallId")?.let { pending.remove(it) }
