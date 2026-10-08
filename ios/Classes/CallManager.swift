@@ -110,6 +110,9 @@ class CallManager: NSObject {
             if(callItem != nil){
                 var item: [String: Any] = callItem!.data.toJSON()
                 item["accepted"] = callItem?.hasConnected
+                // Answer can be acknowledged before SIP connects. Keep this
+                // recoverable even after its CXAction leaves waitingActions.
+                item["answerPending"] = callItem!.data.isAccepted && !callItem!.hasConnected
                 json.append(item)
             }else {
                 let item: [String: String] = ["id": call.uuid.uuidString]

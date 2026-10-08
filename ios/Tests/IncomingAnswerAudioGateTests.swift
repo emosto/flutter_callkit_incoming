@@ -3,6 +3,25 @@ import XCTest
 @testable import AnswerAudio
 
 final class IncomingAnswerAudioGateTests: XCTestCase {
+    func testOldTimeoutCannotCancelRecoveryWaitingForNewActivation() {
+        let gate = IncomingAnswerAudioGate()
+        let id = UUID()
+        var firstResults: [String?] = []
+        gate.prepare(id) { firstResults.append($0) }
+        let oldGeneration = gate.generation(id)!
+        gate.didAnswer(id)
+        gate.didActivate()
+        XCTAssertEqual(firstResults.count, 1)
+        gate.didDeactivate()
+        var recoveryResults: [String?] = []
+        gate.prepare(id) { recoveryResults.append($0) }
+        XCTAssertFalse(gate.cancel(id, reason: "audio_activation_timeout", generation: oldGeneration))
+        XCTAssertTrue(recoveryResults.isEmpty)
+        gate.didActivate()
+        XCTAssertEqual(recoveryResults.count, 1)
+        XCTAssertNil(recoveryResults[0])
+    }
+
     func testAnswerWaitsForRealAudioActivation() {
         let gate = IncomingAnswerAudioGate()
         let id = UUID()

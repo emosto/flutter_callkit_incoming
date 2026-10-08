@@ -139,6 +139,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             let args = call.arguments as? [String: Any] ?? [:]
             if let id = args["actionId"] as? String,
                let action = waitingActions.removeValue(forKey: id) {
+                guard !action.isComplete else { result(nil); return }
                 if args["success"] as? Bool == true {
                     if let held = action as? CXSetHeldCallAction {
                         callManager.callWithUUID(uuid: held.callUUID)?.isOnHold = held.isOnHold
@@ -570,6 +571,10 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     
     func callEndTimeout(_ data: Data) {
+        if let uuid = UUID(uuidString: data.uuid) {
+            cancelIncomingAnswer(uuid, reason: "call_timeout")
+            if answerCall?.uuid == uuid { answerCall = nil }
+        }
         self.saveEndCall(data.uuid, 3)
         guard let call = self.callManager.callWithUUID(uuid: UUID(uuidString: data.uuid)!) else {
             return
@@ -700,18 +705,24 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             }
         }
         guard first else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-            guard let self = self, self.incomingAnswerAudio.isWaiting(uuid) else { return }
-            self.cancelIncomingAnswer(uuid, reason: "audio_activation_timeout")
+        if let generation = incomingAnswerAudio.generation(uuid) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self = self,
+                      self.incomingAnswerAudio.cancel(uuid, reason: "audio_activation_timeout", generation: generation) else { return }
+                self.cancelIncomingAnswer(uuid, reason: "audio_activation_timeout")
+            }
         }
         if let action = waitingActions.values.compactMap({ $0 as? CXAnswerCallAction })
             .first(where: { $0.callUUID == uuid }) {
             acknowledgeIncomingAnswer(action)
         } else if !incomingAnswerAudio.hasAnswered(uuid) {
             // An in-app Hold/End & Answer uses exactly the same native action.
+            let generation = incomingAnswerAudio.generation(uuid)
             callManager.answerCall(call: call) { [weak self] success in
                 DispatchQueue.main.async {
-                    if !success { self?.cancelIncomingAnswer(uuid, reason: "answer_request_failed") }
+                    guard !success, let self = self, let generation = generation,
+                          self.incomingAnswerAudio.cancel(uuid, reason: "answer_request_failed", generation: generation) else { return }
+                    self.cancelIncomingAnswer(uuid, reason: "answer_request_failed")
                 }
             }
         }
@@ -719,6 +730,10 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
 
     private func acknowledgeIncomingAnswer(_ action: CXAnswerCallAction) {
         waitingActions.removeValue(forKey: action.uuid.uuidString)
+        guard !action.isComplete else {
+            cancelIncomingAnswer(action.callUUID, reason: "answer_action_completed")
+            return
+        }
         action.fulfill()
         NSLog("VOIP-CALL: nativeAnswer=fulfilled")
         incomingAnswerAudio.didAnswer(action.callUUID)
@@ -729,7 +744,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             .filter { $0.callUUID == uuid }
         for action in actions {
             waitingActions.removeValue(forKey: action.uuid.uuidString)
-            action.fail()
+            if !action.isComplete { action.fail() }
         }
         incomingAnswerAudio.cancel(uuid, reason: reason)
     }
@@ -928,9 +943,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
         waitingActions.removeValue(forKey: action.uuid.uuidString)
-        action.fail()
+        // CallKit has already failed this action; its API forbids completing it
+        // again. Invalidate the incoming call so a late Dart hold/setup cannot
+        // request another Answer and pick up a call that timed out.
         if let answer = action as? CXAnswerCallAction {
-            incomingAnswerAudio.cancel(answer.callUUID, reason: "answer_action_timeout")
+            cancelIncomingAnswer(answer.callUUID, reason: "answer_action_timeout")
+            if let call = callManager.callWithUUID(uuid: answer.callUUID), !call.hasConnected {
+                callEndTimeout(call.data)
+            }
         }
         NSLog("VOIP-CALL: nativeAction=timedOut")
     }
