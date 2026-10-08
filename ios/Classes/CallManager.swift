@@ -64,6 +64,11 @@ class CallManager: NSObject {
         //requestCall
         self.requestCall(callTransaction, action: "endCall")
     }
+
+    func answerCall(call: Call, completion: @escaping (Bool) -> Void) {
+        requestCall(CXTransaction(action: CXAnswerCallAction(call: call.uuid)),
+                    action: "answerCall", completion: completion)
+    }
     
     func connectedCall(call: Call) {
         guard let callItem = self.callWithUUID(uuid: call.uuid) else {

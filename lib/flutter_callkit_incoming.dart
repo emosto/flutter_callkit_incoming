@@ -30,6 +30,11 @@ class FlutterCallkitIncoming {
       _channel.invokeMethod<void>('completeCallWaitingAction',
           {'actionId': actionId, 'success': success});
 
+  /// iOS only: acknowledge/request Answer after any previous call is held/ended,
+  /// then wait for the provider's real audio activation before starting media.
+  static Future<void> prepareIncomingCallAnswer(String id) =>
+      _channel.invokeMethod<void>('prepareIncomingCallAnswer', {'id': id});
+
   static const MethodChannel _channel =
       MethodChannel('flutter_callkit_incoming');
   static const EventChannel _eventChannel =

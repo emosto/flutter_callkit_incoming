@@ -42,6 +42,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     private var dismissedWaitingCalls = Set<String>()
     private var waitingActions: [String: CXAction] = [:]
     private var synchronizedHolds: [UUID: Bool] = [:]
+    private let incomingAnswerAudio = IncomingAnswerAudioGate()
 
     private func updateWaitingCue(_ calls: [[String: Any]]) {
         let waiting = calls.contains { $0["state"] as? String == "ringing" }
@@ -122,6 +123,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
+        case "prepareIncomingCallAnswer":
+            let args = call.arguments as? [String: Any] ?? [:]
+            guard let id = args["id"] as? String, let uuid = UUID(uuidString: id),
+                  let incoming = callManager.callWithUUID(uuid: uuid), !incoming.isOutGoing else {
+                result(FlutterError(code: "call_unavailable", message: "Incoming call unavailable", details: nil))
+                return
+            }
+            prepareIncomingAnswer(incoming, result: result)
         case "updateCallWaitingState":
             let args = call.arguments as? [String: Any] ?? [:]
             updateWaitingCue(args["audioInterrupted"] as? Bool == true ? [] : (args["calls"] as? [[String: Any]] ?? []))
@@ -135,8 +144,16 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                         callManager.callWithUUID(uuid: held.callUUID)?.isOnHold = held.isOnHold
                     }
                     action.fulfill()
+                    if let answer = action as? CXAnswerCallAction {
+                        incomingAnswerAudio.didAnswer(answer.callUUID)
+                    }
                 }
-                else { action.fail() }
+                else {
+                    action.fail()
+                    if let answer = action as? CXAnswerCallAction {
+                        incomingAnswerAudio.cancel(answer.callUUID, reason: "answer_failed")
+                    }
+                }
             }
             result(nil)
         case "setCallWaitingHeld":
@@ -352,7 +369,9 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                     completion(true)
                     return
                 }
-                self.configureAudioSession(data)
+                // CallKit owns activation. Reporting a ringing call must not
+                // compete with the system's audio session.
+                self.configureAudioSession(data, activate: false)
                 let call = Call(uuid: uuid, data: data)
                 call.handle = data.handle
                 self.callManager.addCall(call)
@@ -415,6 +434,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     @objc public func endCall(_ data: Data) {
         guard let uuid = UUID(uuidString: data.uuid),
               let call = callManager.callWithUUID(uuid: uuid) else { return }
+        cancelIncomingAnswer(uuid, reason: "call_ended")
         self.callManager.endCall(call: call)
     }
 
@@ -470,6 +490,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     }
 
     private func finishIncomingCallEndedRemotely(uuid: UUID, data: Data, provider: CXProvider) {
+        cancelIncomingAnswer(uuid, reason: "call_ended")
         provider.reportCall(
             with: uuid,
             endedAt: Date(),
@@ -629,7 +650,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: self, userInfo: userInfo)
     }
     
-    func configureAudioSession(_ callData: Data? = nil){
+    func configureAudioSession(_ callData: Data? = nil, activate: Bool = true){
         let audioData = callData ?? data
         if audioData?.configureAudioSession != false {
             let session = AVAudioSession.sharedInstance()
@@ -641,11 +662,13 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                 ])
                 
                 try session.setMode(self.getAudioSessionMode(audioData?.audioSessionMode))
-                try session.setActive(audioData?.audioSessionActive ?? true)
+                if activate {
+                    try session.setActive(audioData?.audioSessionActive ?? true)
+                }
                 try session.setPreferredSampleRate(audioData?.audioSessionPreferredSampleRate ?? 44100.0)
                 try session.setPreferredIOBufferDuration(audioData?.audioSessionPreferredIOBufferDuration ?? 0.005)
             }catch{
-                print(error)
+                NSLog("VOIP-CALL: nativeAudioConfigurationFailed code=%ld", (error as NSError).code)
             }
         }
     }
@@ -664,14 +687,51 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         return nil
     }
 
-    private func notifyAppDelegateAudioActivated(reason: String) {
-        print("CallKit native audio activated manually reason=\(reason)")
-        let session = AVAudioSession.sharedInstance()
-        if let appDelegate = callkitIncomingAppDelegate() {
-            appDelegate.didActivateAudioSession(session)
+    private func prepareIncomingAnswer(_ call: Call, result: @escaping FlutterResult) {
+        let uuid = call.uuid
+        NSLog("VOIP-CALL: nativeAnswer=preparing")
+        let first = incomingAnswerAudio.prepare(uuid) { reason in
+            if let reason = reason {
+                NSLog("VOIP-CALL: nativeAnswer=failed reason=%@", reason)
+                result(FlutterError(code: reason, message: "Incoming answer preparation failed", details: nil))
+            } else {
+                NSLog("VOIP-CALL: nativeAnswer=audioReady")
+                result(nil)
+            }
         }
-        sendDefaultAudioInterruptionNofificationToStartAudioResource()
-        self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TOGGLE_AUDIO_SESSION, [ "isActivate": true ])
+        guard first else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self = self, self.incomingAnswerAudio.isWaiting(uuid) else { return }
+            self.cancelIncomingAnswer(uuid, reason: "audio_activation_timeout")
+        }
+        if let action = waitingActions.values.compactMap({ $0 as? CXAnswerCallAction })
+            .first(where: { $0.callUUID == uuid }) {
+            acknowledgeIncomingAnswer(action)
+        } else if !incomingAnswerAudio.hasAnswered(uuid) {
+            // An in-app Hold/End & Answer uses exactly the same native action.
+            callManager.answerCall(call: call) { [weak self] success in
+                DispatchQueue.main.async {
+                    if !success { self?.cancelIncomingAnswer(uuid, reason: "answer_request_failed") }
+                }
+            }
+        }
+    }
+
+    private func acknowledgeIncomingAnswer(_ action: CXAnswerCallAction) {
+        waitingActions.removeValue(forKey: action.uuid.uuidString)
+        action.fulfill()
+        NSLog("VOIP-CALL: nativeAnswer=fulfilled")
+        incomingAnswerAudio.didAnswer(action.callUUID)
+    }
+
+    private func cancelIncomingAnswer(_ uuid: UUID, reason: String) {
+        let actions = waitingActions.values.compactMap { $0 as? CXAnswerCallAction }
+            .filter { $0.callUUID == uuid }
+        for action in actions {
+            waitingActions.removeValue(forKey: action.uuid.uuidString)
+            action.fail()
+        }
+        incomingAnswerAudio.cancel(uuid, reason: reason)
     }
     
     func getAudioSessionMode(_ audioSessionMode: String?) -> AVAudioSession.Mode {
@@ -712,6 +772,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     }
     
     public func providerDidReset(_ provider: CXProvider) {
+        incomingAnswerAudio.reset()
         waitingTimer?.invalidate()
         waitingTimer = nil
         waitingPlayer?.stop()
@@ -749,16 +810,8 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             action.fail()
             return
         }
-        let shouldNotifyAudioActivated = call.data.configureAudioSession == false
-        self.configureAudioSession(call.data)
-        if shouldNotifyAudioActivated {
-            self.notifyAppDelegateAudioActivated(reason: "answer")
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1200)) {
-            self.configureAudioSession(call.data)
-        }
-
-
+        NSLog("VOIP-CALL: nativeAnswer=received")
+        self.configureAudioSession(call.data, activate: false)
         call.hasConnectDidChange = { [weak self] in
             self?.sharedProvider?.reportOutgoingCall(with: call.uuid, connectedAt: call.connectedData)
         }
@@ -768,6 +821,10 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         waitingTimer = nil
         waitingPlayer?.stop()
         waitingActions[action.uuid.uuidString] = action
+        if incomingAnswerAudio.isWaiting(action.callUUID) {
+            // Dart has already completed the previous call's hold/end.
+            acknowledgeIncomingAnswer(action)
+        }
         var body = call.data.toJSON()
         body["actionId"] = action.uuid.uuidString
         sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_ACCEPT, body)
@@ -787,6 +844,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        cancelIncomingAnswer(action.callUUID, reason: "call_ended")
         guard let call = self.callManager.callWithUUID(uuid: action.callUUID) else {
             // A late dismissal belongs only to this UUID. Global data may
             // already describe a different, established call.
@@ -871,6 +929,10 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
         waitingActions.removeValue(forKey: action.uuid.uuidString)
         action.fail()
+        if let answer = action as? CXAnswerCallAction {
+            incomingAnswerAudio.cancel(answer.callUUID, reason: "answer_action_timeout")
+        }
+        NSLog("VOIP-CALL: nativeAction=timedOut")
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
@@ -878,6 +940,8 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.didActivateAudioSession(audioSession)
         }
+        NSLog("VOIP-CALL: nativeAudio=activated")
+        incomingAnswerAudio.didActivate()
 
         if(self.answerCall?.hasConnected ?? false){
             sendDefaultAudioInterruptionNofificationToStartAudioResource()
@@ -899,12 +963,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
             }
         }
         sendDefaultAudioInterruptionNofificationToStartAudioResource()
-        configureAudioSession()
+        configureAudioSession(activate: false)
 
         self.sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TOGGLE_AUDIO_SESSION, [ "isActivate": true ])
     }
     
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        NSLog("VOIP-CALL: nativeAudio=deactivated")
+        incomingAnswerAudio.didDeactivate()
         
         if let appDelegate = callkitIncomingAppDelegate() {
             appDelegate.didDeactivateAudioSession(audioSession)
