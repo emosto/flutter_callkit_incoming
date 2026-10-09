@@ -9,11 +9,36 @@ import Foundation
 import CallKit
 
 @available(iOS 10.0, *)
-class CallManager: NSObject {
+class CallManager: NSObject, CXCallObserverDelegate {
     
     private let callController = CXCallController()
     private var sharedProvider: CXProvider? = nil
     private(set) var calls = [Call]()
+
+    var systemStateDidChange: (() -> Void)?
+
+    override init() {
+        super.init()
+        callController.callObserver.setDelegate(self, queue: .main)
+    }
+
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        systemStateDidChange?()
+    }
+
+    func logSystemState(_ context: String, pendingActions: Int, waitingActions: Int) {
+        let snapshot = CallkitSystemStateSnapshot.summary(
+            calls: callController.callObserver.calls.map {
+                CallkitSystemCallState(id: $0.uuid, connected: $0.hasConnected,
+                                      held: $0.isOnHold, ended: $0.hasEnded)
+            },
+            ownedIDs: Set(calls.map { $0.uuid }),
+            pendingActions: pendingActions, waitingActions: waitingActions,
+            localHeld: calls.filter { $0.isOnHold }.count,
+            localConnected: calls.filter { $0.hasConnected }.count,
+            holdingSupported: calls.filter { $0.data.supportsHolding }.count)
+        NSLog("VOIP-CALL: nativeState=%@ %@", context, snapshot)
+    }
     
     
     func setSharedProvider(_ sharedProvider: CXProvider) {
@@ -54,7 +79,13 @@ class CallManager: NSObject {
         let muteAction = CXSetHeldCallAction(call: call.uuid, onHold: onHold)
         let callTransaction = CXTransaction()
         callTransaction.addAction(muteAction)
-        self.requestCall(callTransaction, action: "holdCall")
+        self.requestCall(callTransaction, action: "holdCall") { [weak self] success in
+            NSLog("VOIP-CALL: nativeHold=requestResult success=%@ held=%@",
+                  String(success), String(onHold))
+            DispatchQueue.main.async {
+                self?.systemStateDidChange?()
+            }
+        }
     }
     
     func endCall(call: Call) {

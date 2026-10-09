@@ -44,6 +44,14 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     private var synchronizedHolds: [UUID: Bool] = [:]
     private let incomingAnswerAudio = IncomingAnswerAudioGate()
 
+    private func logSystemCallState(_ context: String) {
+        let pending = sharedProvider?.pendingTransactions.reduce(0) {
+            $0 + $1.actions.filter { !$0.isComplete }.count
+        } ?? 0
+        callManager.logSystemState(context, pendingActions: pending,
+                                   waitingActions: waitingActions.values.filter { !$0.isComplete }.count)
+    }
+
     private func updateWaitingCue(_ calls: [[String: Any]]) {
         let waiting = calls.contains { $0["state"] as? String == "ringing" }
             && calls.contains { $0["state"] as? String == "active" }
@@ -112,6 +120,10 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     public init(messenger: FlutterBinaryMessenger) {
         callManager = CallManager()
+        super.init()
+        callManager.systemStateDidChange = { [weak self] in
+            self?.logSystemCallState("observerOrRequest")
+        }
     }
     
     private func shareHandlers(with registrar: FlutterPluginRegistrar) {
@@ -155,6 +167,11 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
                         incomingAnswerAudio.cancel(answer.callUUID, reason: "answer_failed")
                     }
                 }
+                if let held = action as? CXSetHeldCallAction {
+                    NSLog("VOIP-CALL: nativeHold=completed success=%@ held=%@",
+                          String(args["success"] as? Bool == true), String(held.isOnHold))
+                }
+                logSystemCallState("actionCompleted")
             }
             result(nil)
         case "setCallWaitingHeld":
@@ -737,6 +754,7 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
         action.fulfill()
         NSLog("VOIP-CALL: nativeAnswer=fulfilled")
         incomingAnswerAudio.didAnswer(action.callUUID)
+        logSystemCallState("answerFulfilled")
     }
 
     private func cancelIncomingAnswer(_ uuid: UUID, reason: String) {
@@ -895,16 +913,21 @@ public class SwiftFlutterCallkitIncomingPlugin: NSObject, FlutterPlugin, CXProvi
     
     
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+        NSLog("VOIP-CALL: nativeHold=received held=%@", String(action.isOnHold))
         guard let call = callManager.callWithUUID(uuid: action.callUUID) else {
             action.fail()
+            NSLog("VOIP-CALL: nativeHold=missingCall")
             return
         }
         if synchronizedHolds.removeValue(forKey: action.callUUID) == action.isOnHold {
             call.isOnHold = action.isOnHold
             action.fulfill()
+            NSLog("VOIP-CALL: nativeHold=mirrorFulfilled held=%@", String(action.isOnHold))
+            logSystemCallState("holdMirrorFulfilled")
             return
         }
         waitingActions[action.uuid.uuidString] = action
+        logSystemCallState("holdReceived")
         sendEvent(SwiftFlutterCallkitIncomingPlugin.ACTION_CALL_TOGGLE_HOLD, [
             "id": action.callUUID.uuidString.lowercased(),
             "isOnHold": action.isOnHold,

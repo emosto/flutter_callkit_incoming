@@ -8,6 +8,8 @@ trap 'rm -rf "$task_dir"' EXIT
 mkdir -p "$task_dir/Sources/AnswerAudio" "$task_dir/Tests/AnswerAudioTests"
 cp "$test_dir/../Classes/IncomingAnswerAudioGate.swift" "$task_dir/Sources/AnswerAudio/"
 cp "$test_dir/IncomingAnswerAudioGateTests.swift" "$task_dir/Tests/AnswerAudioTests/"
+cp "$test_dir/../Classes/CallkitSystemStateSnapshot.swift" "$task_dir/Sources/AnswerAudio/"
+cp "$test_dir/CallkitSystemStateSnapshotTests.swift" "$task_dir/Tests/AnswerAudioTests/"
 cat > "$task_dir/Package.swift" <<'PACKAGE'
 // swift-tools-version: 5.9
 import PackageDescription
