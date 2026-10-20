@@ -1,6 +1,7 @@
 package com.hiennv.flutter_callkit_incoming
 
 import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import android.os.OutcomeReceiver
@@ -11,6 +12,7 @@ import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
 import android.telecom.DisconnectCause
+import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.util.Log
@@ -41,13 +43,20 @@ class CallkitConnectionService : ConnectionService() {
             desired.forEach { (id, state) ->
                 val connection = connections[id]
                 if (connection != null) applyState(connection, state)
-                else if (state != "ringing" && pending.add(id)) {
+                // "preparing": answered/dialed, but the app is still setting up media.
+                else if (state != "ringing" && state != "preparing" && pending.add(id)) {
+                    // The mirror starts after the answer (or dial), so it is placed as an
+                    // outgoing call: an incoming one would make Telecom ring an answered
+                    // call, taking ringtone focus and switching the audio mode during setup.
                     try {
                         val account = InAppCallManager(context)
                         account.registerPhoneAccount()
-                        val extras = Bundle().apply { putString("voxbiCallId", id) }
+                        val extras = Bundle().apply {
+                            putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account.getPhoneAccountHandle())
+                            putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, Bundle().apply { putString("voxbiCallId", id) })
+                        }
                         (context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager)
-                            .addNewIncomingCall(account.getPhoneAccountHandle(), extras)
+                            .placeCall(Uri.fromParts(PhoneAccount.SCHEME_SIP, id, null), extras)
                     } catch (error: Exception) {
                         pending.remove(id)
                         Log.w("CallWaiting", "Telecom connection unavailable: ${error.javaClass.simpleName}")
@@ -64,7 +73,7 @@ class CallkitConnectionService : ConnectionService() {
         }
     }
 
-    override fun onCreateIncomingConnection(account: PhoneAccountHandle?, request: ConnectionRequest): Connection {
+    override fun onCreateOutgoingConnection(account: PhoneAccountHandle?, request: ConnectionRequest): Connection {
         val id = request.extras?.getString("voxbiCallId") ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
         pending.remove(id)
         if (!desired.containsKey(id)) return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED))
@@ -72,7 +81,9 @@ class CallkitConnectionService : ConnectionService() {
         connection.connectionProperties = Connection.PROPERTY_SELF_MANAGED
         connection.connectionCapabilities = Connection.CAPABILITY_SUPPORT_HOLD or Connection.CAPABILITY_HOLD
         connection.setAudioModeIsVoip(true)
-        connection.setInitializing()
+        // The placeholder handle only carries the call id; never expose it as an address.
+        connection.setAddress(null, TelecomManager.PRESENTATION_UNKNOWN)
+        connection.setDialing()
         connections[id] = connection
         // Telecom must receive the connection before setActive/setOnHold.
         android.os.Handler(mainLooper).post { desired[id]?.let { applyState(connection, it) } }
@@ -126,7 +137,8 @@ class CallkitConnectionService : ConnectionService() {
     }
 
 
-    override fun onCreateIncomingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) {
+    override fun onCreateOutgoingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) {
         request.extras?.getString("voxbiCallId")?.let { pending.remove(it) }
+        Log.w("CallWaiting", "Telecom connection refused")
     }
 }
