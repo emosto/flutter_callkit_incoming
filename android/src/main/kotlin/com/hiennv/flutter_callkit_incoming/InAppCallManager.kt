@@ -26,6 +26,9 @@ class InAppCallManager(private val context: Context) {
 
         val phoneAccount = PhoneAccount.builder(handle, "Callkit Incoming In-App Call")
             .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+            // Mirrors are placed with a sip: placeholder handle (CallkitConnectionService).
+            .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
+            .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
             .build()
 
         telecomManager.registerPhoneAccount(phoneAccount)
